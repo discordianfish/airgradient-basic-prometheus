@@ -35,6 +35,7 @@ CC BY-SA 4.0 Attribution-ShareAlike 4.0 International License
 #include <AirGradient.h>
 #include <Arduino_JSON.h>
 #include <ESP8266HTTPClient.h>
+#include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiManager.h>
@@ -357,6 +358,8 @@ AgServer agServer;
 /** Create airgradient instance for 'DIY_BASIC' board */
 AirGradient ag = AirGradient(DIY_BASIC);
 
+ESP8266WebServer server(80);
+
 static int co2Ppm = -1;
 static int pm25 = -1;
 static float temp = -1001;
@@ -364,6 +367,7 @@ static int hum = -1;
 static long val;
 static String wifiSSID = "";
 static bool wifiHasConfig = false; /** */
+static int wifi_rssi;
 
 static void boardInit(void);
 static void failedHandler(String msg);
@@ -419,6 +423,8 @@ void setup() {
     if (agServer.isCo2Calib()) {
       co2Calibration();
     }
+
+    setupWebServer();
   }
 
   /** Show serial number display */
@@ -455,6 +461,9 @@ void loop() {
   }
 
   updateWiFiConnect();
+  wifi_rssi = WiFi.RSSI();
+
+  server.handleClient();
 }
 
 static void sendPing() {
@@ -752,3 +761,91 @@ String getNormalizedMac() {
   mac.toLowerCase();
   return mac;
 }
+
+
+// Creates endpoints for the webserver and starts it up
+void setupWebServer(){
+  // Query this endpoint to get JSON with data
+  server.on("/api", []() {
+    server.send(200, "application/json", getJSONData());
+  });
+
+  // Visit this endpoint in the browser to view data in a table
+  server.on("/", []() {
+    server.send(200, "text/html;charset=UTF-8", getHTML());
+  });
+
+  // Prometheus spec metrics API
+  server.on("/metrics", []() {
+    server.send(200, "text/plain;charset=UTF-8", getMetrics());
+  });
+
+  server.begin();
+}
+
+// Creates a JSON string containing all the values
+String getJSONData() {
+  String payload = "{";
+  payload += getField("wifi", wifi_rssi) + ",";
+  payload += getField("pm25", pm25) + ",";
+  payload += getField("co2Ppm", co2Ppm) + ",";
+  payload += getField("temperature", temp) + ",";
+  payload += getField("humidity", hum) + ",";
+  payload += "\"serial\":\"" + String(ESP.getChipId(), HEX) + "\"}";
+
+  return payload;
+}
+
+// Returns one line of JSON: `"name": value`
+String getField(String name, int value) {
+  String castValue = String(value);
+  return "\"" + name + "\":" + castValue;
+}
+
+// Returns a HTML page with a data table
+String getHTML() {
+  String html = "<!DOCTYPE html>";
+  html += "<head> <style> body { font-size: 1.5rem; } table { font-family: arial, sans-serif; border-collapse: collapse; width: 100%; } td, th { border: 1px solid #dddddd; text-align: left; padding: 8px; } tr:nth-child(even) { background-color: #dddddd; } </style> </head> ";
+  html += "<body><table>";
+  html += getTableRow("Particulate matter 2.5", pm25, "μg/m3");
+  html += getTableRow("CO2", co2Ppm, " ppm");
+  html += getTableRow("Temperature", temp, "°C");
+  html += getTableRow("Humidity", hum, " %");
+  html += "<tr><td>Serial Number</td><td>" + String(ESP.getChipId(), HEX) + "</td><td></td></tr>";
+  html += "</table></body></html>";
+
+  return html;
+}
+
+// Returns HTML for one table row
+String getTableRow(String name, int value, String unit) {
+  String displayValue = String(value);
+  return "<tr><td>" + name + "</td><td>" + displayValue + "</td><td>" + unit + "</td></tr>";
+}
+
+// Creates Prometheus spec metrics page
+String getMetrics() {
+  String response = "";
+  response += "\n# HELP wifi_station_signal_dbm Current WiFi signal strength, in dBm";
+  response += "\n# TYPE wifi_station_signal_dbm gauge";
+  response += "\nwifi_station_signal_dbm " + String(wifi_rssi);
+  response += "\n";
+  response += "\n# HELP particle_count_pm25 Particulate Matter PM2.5 value, in μg/m3";
+  response += "\n# TYPE particle_count_pm25 gauge";
+  response += "\nparticle_count_pm25 " + String(pm25);
+  response += "\n";
+  response += "\n# HELP co2_ppm CO2 value, in ppm";
+  response += "\n# TYPE co2_ppm gauge";
+  response += "\nco2_ppm " + String(co2Ppm);
+  response += "\n";
+  response += "\n# HELP temperature_celsius Temperature, in degrees Celsius";
+  response += "\n# TYPE temperature_celsius gauge";
+  response += "\ntemperature_celsius " + String((float)temp / 10);
+  response += "\n";
+  response += "\n# HELP humidity_percent Relative humidity, in percent";
+  response += "\n# TYPE humidity_percent gauge";
+  response += "\nhumidity_percent " + String(hum);
+
+  return response;
+}
+
